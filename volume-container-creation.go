@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"time"
 	"github.com/calavera/dkvolume"
     "github.com/samalba/dockerclient"
 )
@@ -19,6 +18,7 @@ type volume struct {
 
 type volumePoolDriver struct {
 	root       string
+	docker	   *dockerclient.DockerClient
 	volumes    map[string]*volume
 	m          *sync.Mutex
 }
@@ -30,11 +30,21 @@ func eventCallback(event *dockerclient.Event, ec chan error, args ...interface{}
 
 func newVolumePoolDriver(root string) volumePoolDriver {
 	
+	docker, _ := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
+
 	d := volumePoolDriver{
 		root: 	 root,
+		docker:  docker,
 		volumes: map[string]*volume{},
 		m:       &sync.Mutex{},
 	}
+
+    // Init the client
+    //docker, _ := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
+
+    // Listen to events
+    d.docker.StartMonitorEvents(eventCallback, nil)
+
 	return d
 }
 
@@ -48,35 +58,26 @@ func (d volumePoolDriver) Create(r dkvolume.Request) dkvolume.Response {
 		return dkvolume.Response{}
 	}
 
-    // Init the client
-    docker, _ := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
+	containerName := fmt.Sprintf("pool-volume-%s", r.Name)
 
 	// Create a container
     containerConfig := &dockerclient.ContainerConfig{
         Image: "ubuntu:14.04",
+        Volumes: map[string]struct{}{fmt.Sprintf("%s:/data0", m): {}},
         Cmd:   []string{"bash"},
         AttachStdin: true,
         Tty:   true}
-    containerId, err := docker.CreateContainer(containerConfig, "volume-pool-container-foo")
+    containerId, err := d.docker.CreateContainer(containerConfig, containerName)
     if err != nil {
         log.Fatal(err)
     }
 
     // Start the container
     hostConfig := &dockerclient.HostConfig{}
-    err = docker.StartContainer(containerId, hostConfig)
+    err = d.docker.StartContainer(containerId, hostConfig)
     if err != nil {
         log.Fatal(err)
     }
-
-    // Stop the container (with 5 seconds timeout)
-    docker.StopContainer(containerId, 5)
-
-    // Listen to events
-    docker.StartMonitorEvents(eventCallback, nil)
-
-    // Hold the execution to look at the events coming
-    time.Sleep(3600 * time.Second)
 
 	return dkvolume.Response{}
 }

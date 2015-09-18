@@ -20,12 +20,11 @@ func volumeContainerCreationHandler () {
 
 }
 
-const testVolumeId = "_test_volume"
+const testVolumeId = "_pool"
 
 var (
 	defaultDir  = filepath.Join(dkvolume.DefaultDockerRootDirectory, testVolumeId)	
-	root        = flag.String("root", defaultDir, "test volumes root directory")
-	wat         = flag.String("wat", "", "wat??")
+	root        = flag.String("root", defaultDir, "the root directory for your volumes")
 )
 
 
@@ -37,7 +36,7 @@ func main() {
 	}
 
 	flag.Parse()
-	if len(*wat) == 0 {
+	if len(*root) == 0 {
 		Usage()
 		os.Exit(1)
 	}
