@@ -1,0 +1,180 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"time"
+	"github.com/calavera/dkvolume"
+    "github.com/samalba/dockerclient"
+)
+
+type volume struct {
+	name        string
+	connections int
+}
+
+type volumePoolDriver struct {
+	root       string
+	volumes    map[string]*volume
+	m          *sync.Mutex
+}
+
+// Callback used to listen to Docker's events
+func eventCallback(event *dockerclient.Event, ec chan error, args ...interface{}) {
+    log.Printf("Received event: %#v\n", *event)
+}
+
+func newVolumePoolDriver(root string) volumePoolDriver {
+	
+	d := volumePoolDriver{
+		root: 	 root,
+		volumes: map[string]*volume{},
+		m:       &sync.Mutex{},
+	}
+	return d
+}
+
+func (d volumePoolDriver) Create(r dkvolume.Request) dkvolume.Response {
+	log.Printf("Creating volume %s\n", r.Name)
+	d.m.Lock()
+	defer d.m.Unlock()
+	m := d.mountpoint(r.Name)
+
+	if _, ok := d.volumes[m]; ok {
+		return dkvolume.Response{}
+	}
+
+    // Init the client
+    docker, _ := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
+
+	// Create a container
+    containerConfig := &dockerclient.ContainerConfig{
+        Image: "ubuntu:14.04",
+        Cmd:   []string{"bash"},
+        AttachStdin: true,
+        Tty:   true}
+    containerId, err := docker.CreateContainer(containerConfig, "volume-pool-container-foo")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Start the container
+    hostConfig := &dockerclient.HostConfig{}
+    err = docker.StartContainer(containerId, hostConfig)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Stop the container (with 5 seconds timeout)
+    docker.StopContainer(containerId, 5)
+
+    // Listen to events
+    docker.StartMonitorEvents(eventCallback, nil)
+
+    // Hold the execution to look at the events coming
+    time.Sleep(3600 * time.Second)
+
+	return dkvolume.Response{}
+}
+
+func (d volumePoolDriver) Remove(r dkvolume.Request) dkvolume.Response {
+	log.Printf("Removing volume %s\n", r.Name)
+	d.m.Lock()
+	defer d.m.Unlock()
+	m := d.mountpoint(r.Name)
+
+	if s, ok := d.volumes[m]; ok {
+		if s.connections <= 1 {
+			
+			delete(d.volumes, m)
+		}
+	}
+	return dkvolume.Response{}
+}
+
+func (d volumePoolDriver) Path(r dkvolume.Request) dkvolume.Response {
+	return dkvolume.Response{Mountpoint: d.mountpoint(r.Name)}
+}
+
+func (d volumePoolDriver) Mount(r dkvolume.Request) dkvolume.Response {
+	d.m.Lock()
+	defer d.m.Unlock()
+	m := d.mountpoint(r.Name)
+	log.Printf("Mounting volume %s on %s\n", r.Name, m)
+
+	s, ok := d.volumes[m]
+	if ok && s.connections > 0 {
+		s.connections++
+		return dkvolume.Response{Mountpoint: m}
+	}
+
+	fi, err := os.Lstat(m)
+
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(m, 0755); err != nil {
+			return dkvolume.Response{Err: err.Error()}
+		}
+	} else if err != nil {
+		return dkvolume.Response{Err: err.Error()}
+	}
+
+	if fi != nil && !fi.IsDir() {
+		return dkvolume.Response{Err: fmt.Sprintf("%v already exists and is not a directory", m)}
+	}
+
+	if err := d.mountVolume(r.Name, m); err != nil {
+		return dkvolume.Response{Err: err.Error()}
+	}
+
+	d.volumes[m] = &volume{name: r.Name, connections: 1}
+
+	return dkvolume.Response{Mountpoint: m}
+}
+
+func (d volumePoolDriver) Unmount(r dkvolume.Request) dkvolume.Response {
+	d.m.Lock()
+	defer d.m.Unlock()
+	m := d.mountpoint(r.Name)
+	log.Printf("Unmounting volume %s from %s\n", r.Name, m)
+
+	if s, ok := d.volumes[m]; ok {
+		if s.connections == 1 {
+			if err := d.unmountVolume(m); err != nil {
+				return dkvolume.Response{Err: err.Error()}
+			}
+		}
+		s.connections--
+	} else {
+		return dkvolume.Response{Err: fmt.Sprintf("Unable to find volume mounted on %s", m)}
+	}
+
+	return dkvolume.Response{}
+}
+
+func (d *volumePoolDriver) mountpoint(name string) string {
+	return filepath.Join(d.root, name)
+}
+
+func (d *volumePoolDriver) mountVolume(name, destination string) error {
+	//server := d.servers[rand.Intn(len(d.servers))]
+
+	// cmd := fmt.Sprintf("glusterfs --log-level=DEBUG --volfile-id=%s --volfile-server=%s %s", name, server, destination)
+	// if out, err := exec.Command("sh", "-c", cmd).CombinedOutput(); err != nil {
+	// 	log.Println(string(out))
+	// 	return err
+	// }
+	return nil
+}
+
+func (d *volumePoolDriver) unmountVolume(target string) error {
+	cmd := fmt.Sprintf("umount %s", target)
+	if out, err := exec.Command("sh", "-c", cmd).CombinedOutput(); err != nil {
+		log.Println(string(out))
+		return err
+	}
+	return nil
+}

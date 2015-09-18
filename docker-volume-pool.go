@@ -1,9 +1,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"html"
 	"net/http"
+	"os"
+	"path/filepath"
+	"github.com/calavera/dkvolume"
 )
 
 func echoHandler(w http.ResponseWriter, r *http.Request) {
@@ -11,15 +15,34 @@ func echoHandler(w http.ResponseWriter, r *http.Request) {
 		html.EscapeString(r.URL.Path))
 }
 
-func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/foo", echoHandler)
-	mux.HandleFunc("/VolumeDriver.Create", echoHandler)
-	mux.HandleFunc("/VolumeDriver.Mount", echoHandler)
-	mux.HandleFunc("/VolumeDriver.Path", echoHandler)
-	mux.HandleFunc("/VolumeDriver.Unmount", echoHandler)
+func volumeContainerCreationHandler () {
 
-	fmt.Println("starting up..")
-	fmt.Println(http.ListenAndServe(":8081", mux))
-	fmt.Println("shutting down..")
+
+}
+
+const testVolumeId = "_test_volume"
+
+var (
+	defaultDir  = filepath.Join(dkvolume.DefaultDockerRootDirectory, testVolumeId)	
+	root        = flag.String("root", defaultDir, "test volumes root directory")
+	wat         = flag.String("wat", "", "wat??")
+)
+
+
+func main() {
+
+	var Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+
+	flag.Parse()
+	if len(*wat) == 0 {
+		Usage()
+		os.Exit(1)
+	}
+
+	d := newVolumePoolDriver(*root)
+	h := dkvolume.NewHandler(d)
+	fmt.Println(h.ServeUnix("root", "test_volume"))
 }
