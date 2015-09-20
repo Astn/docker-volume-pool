@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+    "io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,34 +50,117 @@ func newVolumePoolDriver(root string) volumePoolDriver {
 }
 
 func (d volumePoolDriver) Create(r dkvolume.Request) dkvolume.Response {
-	log.Printf("Creating volume %s\n", r.Name)
+	log.Printf("Creating volume %s with options %s\n", r.Name, r.Options)
 	d.m.Lock()
 	defer d.m.Unlock()
-	m := d.mountpoint(r.Name)
 
-	if _, ok := d.volumes[m]; ok {
+    //assign volume to group, defined in r.Options
+    group := r.Options["group"]
+	log.Printf("assigning to group %s\n", group) 	
+	volumeName := fmt.Sprintf("%s-%s", group, r.Name)
+
+    scheme := r.Options["scheme"]
+	log.Printf("using scheme %s\n", scheme)
+
+	winner := ""
+
+	files, _ := ioutil.ReadDir(*root)
+	
+	if true { //scheme == "ordered" {
+    	//for scheme=ordered, use directory with least # of group dirs
+	    for _, f := range files {
+
+	    	filePath := filepath.Join(*root, f.Name())
+		    fmt.Printf("*found %s\n", filePath)
+
+			nestedFiles, _ := ioutil.ReadDir(filePath)
+			if len(nestedFiles) == 0 {
+				winner = filepath.Join(f.Name())
+				break
+			} else {
+			    for _, nf := range nestedFiles {
+
+			    	nfPath := filepath.Join(*root, f.Name(), nf.Name())
+			        fmt.Printf("**found %s\n", nfPath)
+
+			        winner = filepath.Join(f.Name(), nf.Name())
+			        break
+			    }
+			}
+		}
+	} else {
+		//ls for directories in d.root, pick 1st one
+		winner = filepath.Join(*root, files[0].Name())
+	}
+
+	log.Printf("winner is %s\n", winner)
+
+	mountpoint := filepath.Join(d.root, winner, group, r.Name)
+
+	if _, ok := d.volumes[mountpoint]; ok {
 		return dkvolume.Response{}
 	}
 
-	containerName := fmt.Sprintf("pool-volume-%s", r.Name)
-
-	// Create a container
-    containerConfig := &dockerclient.ContainerConfig{
-        Image: "ubuntu:14.04",
-        Volumes: map[string]struct{}{fmt.Sprintf("%s:/data0", m): {}},
-        Cmd:   []string{"bash"},
-        AttachStdin: true,
-        Tty:   true}
-    containerId, err := d.docker.CreateContainer(containerConfig, containerName)
-    if err != nil {
+	log.Printf("creating directory at %s\n", mountpoint)
+	err := os.MkdirAll(mountpoint, os.ModeDir)
+	if err != nil {
         log.Fatal(err)
     }
 
-    // Start the container
-    hostConfig := &dockerclient.HostConfig{}
-    err = d.docker.StartContainer(containerId, hostConfig)
+	containerName := fmt.Sprintf("pool-volume-%s", volumeName)
+	fmt.Sprintf("container name is %s\n", containerName)
+
+ 	// Get only running containers
+    containers, err := d.docker.ListContainers(true, false, "")
     if err != nil {
         log.Fatal(err)
+    }
+    
+    containerExists := false
+    containerIsRunning := false
+
+    containerId := ""
+
+    for _, c := range containers {
+        log.Printf("found container %s, %s\n",c.Id, c.Names)
+        
+        if stringsContain(c.Names, fmt.Sprintf("/%s", containerName)) {
+        	containerExists = true
+			
+			runningContainers, err := d.docker.ListContainers(false, false, "")
+		    if err != nil {
+		        log.Fatal(err)
+		    }
+		    for _, rc := range runningContainers {			    
+			    if stringsContain(rc.Names, containerName) {
+			    	containerIsRunning = true
+        		}
+        	}
+        }	
+    }
+
+    if containerExists != true {
+    	// Create a container
+	    containerConfig := &dockerclient.ContainerConfig{
+	        Image: "ubuntu:14.04",
+	        Volumes: map[string]struct{}{fmt.Sprintf("%s:/data0", r.Name): {}},
+	        Cmd:   []string{"bash"},
+	        AttachStdin: true,
+	        Tty:   true,
+	    }
+	    containerId, err = d.docker.CreateContainer(containerConfig, containerName)
+	    if err != nil {
+	        log.Fatal(err)
+	    }
+    }
+
+    if containerIsRunning != true {
+	    // Start the container
+	    hostConfig := &dockerclient.HostConfig{}
+	    err = d.docker.StartContainer(containerId, hostConfig)
+	    if err != nil {
+	        log.Fatal(err)
+	    }
     }
 
 	return dkvolume.Response{}
@@ -178,4 +262,13 @@ func (d *volumePoolDriver) unmountVolume(target string) error {
 		return err
 	}
 	return nil
+}
+
+func stringsContain(list []string, str string) bool {
+	for _, v := range list {
+		if v == str {
+			return true
+		}
+	}
+	return false
 }

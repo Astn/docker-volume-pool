@@ -41,7 +41,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	fmt.Fprintf(os.Stderr, "root is %s\n", *root)
+
 	d := newVolumePoolDriver(*root)
 	h := dkvolume.NewHandler(d)
-	fmt.Println(h.ServeUnix("root", "test_volume"))
+	fmt.Println(h.ServeUnix("root", "volume_pool"))
 }
